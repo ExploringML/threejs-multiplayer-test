@@ -120,18 +120,29 @@ document.addEventListener('htmx:afterSettle', function (event) {
 document.addEventListener('htmx:wsAfterMessage', function (event) {
 	console.log('📨 HTMX wsAfterMessage:', event.detail);
 
-	// Check if this message contains a client ID input
-	const parser = new DOMParser();
-	const doc = parser.parseFromString(event.detail.message, 'text/html');
-	const clientIdInput = doc.querySelector('#client-id');
+	// Check if this message contains our client ID
+	if (event.detail.message && !myClientId) {
+		// Try to extract client ID from the message using regex
+		const match = event.detail.message.match(/value="([^"]+)"[^>]+id="client-id"/);
+		if (match) {
+			myClientId = match[1];
+			console.log('✅ Found client ID in websocket message:', myClientId);
 
-	if (clientIdInput) {
-		myClientId = clientIdInput.value;
-		console.log('✅ Client ID captured from message:', myClientId);
+			// Force an initial position update
+			const msgInput = document.getElementById('msg');
+			if (msgInput) {
+				msgInput.value = `POS:0,0.5,0`;
+				const form = msgInput.closest('form');
+				if (form) {
+					console.log('📡 Sending initial position update');
+					form.dispatchEvent(new Event('submit'));
+				}
+			}
+		}
 	}
 
 	// Look for position updates
-	const positionsElement = doc.querySelector('#position-updates');
+	const positionsElement = document.getElementById('position-updates');
 	if (positionsElement) {
 		const positionsJson = positionsElement.textContent || '';
 		if (positionsJson && positionsJson.includes('{')) {
@@ -157,59 +168,28 @@ document.addEventListener('htmx:oobAfterSwap', function (event) {
 		const text = event.detail.elt.textContent;
 		const dataValue = event.detail.elt.getAttribute('data-value');
 
-		myClientId = value || text || dataValue;
+		if (!myClientId) {  // Only set if not already set
+			myClientId = value || text || dataValue;
 
-		if (myClientId) {
-			console.log('✅ My client ID assigned:', myClientId);
-
-			// Force an initial position update to ensure our cube gets created
-			const msgInput = document.getElementById('msg');
-			if (msgInput) {
-				msgInput.value = `POS:0,0.5,0`;  // Send initial position
-				const form = msgInput.closest('form');
-				if (form) {
-					console.log('📡 Sending initial position update');
-					form.dispatchEvent(new Event('submit'));
-				}
-			}
-		} else {
-			console.error('❌ Failed to get client ID from element:', event.detail.elt);
-		}
-	}
-});
-
-// Fallback: Check periodically for client ID element
-function checkForClientId() {
-	if (!myClientId) {
-		const clientIdElement = document.getElementById('client-id');
-		if (clientIdElement) {
-			console.log('Found client-id element through polling:', clientIdElement);
-			myClientId = clientIdElement.value || clientIdElement.textContent || clientIdElement.getAttribute('data-value');
 			if (myClientId) {
-				console.log('✅ My client ID assigned (through polling):', myClientId);
-				// Force an initial position update
+				console.log('✅ My client ID assigned:', myClientId);
+
+				// Force an initial position update to ensure our cube gets created
 				const msgInput = document.getElementById('msg');
 				if (msgInput) {
-					msgInput.value = `POS:0,0.5,0`;
+					msgInput.value = `POS:0,0.5,0`;  // Send initial position
 					const form = msgInput.closest('form');
 					if (form) {
 						console.log('📡 Sending initial position update');
 						form.dispatchEvent(new Event('submit'));
 					}
 				}
+			} else {
+				console.error('❌ Failed to get client ID from element:', event.detail.elt);
 			}
 		}
 	}
-}
-
-// Check every second until we get a client ID
-const clientIdCheckInterval = setInterval(() => {
-	if (myClientId) {
-		clearInterval(clientIdCheckInterval);
-	} else {
-		checkForClientId();
-	}
-}, 1000);
+});
 
 // Process position updates received from WebSocket
 function updateAllCubesPositions(positionsJson) {
