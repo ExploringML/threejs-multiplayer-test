@@ -54,12 +54,12 @@ def index():
         Div(render_messages(messages, latest_position), id='msg-list'), # All the Messages
         hx_ext='ws', ws_connect='ws') # Use a web socket 
 
-def on_connect(ws, send): 
+async def on_connect(ws, send): 
     users[id(ws)] = send
     # When a new user connects, immediately send them the latest position if available
     if latest_position:
         # Immediately send the current position to the new user
-        asyncio.create_task(send(render_messages(messages, latest_position)))
+        await send(render_messages(messages, latest_position))
 
 def on_disconnect(ws):
     users.pop(id(ws), None)
