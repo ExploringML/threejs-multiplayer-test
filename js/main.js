@@ -10,12 +10,24 @@ camera.lookAt(0, 0, 0);
 // scene
 const scene = new THREE.Scene();
 
-// geometry - cube
-const geometry = new THREE.BoxGeometry(1, 1, 1);
-const material = new THREE.MeshBasicMaterial({ color: 0xffff00 });
-const cube = new THREE.Mesh(geometry, material);
-cube.position.set(0, 0.5, 0); // Position the cube on top of the floor
-scene.add(cube);
+// Store my client ID when received from server
+let myClientId = null;
+
+// Keep track of all cubes by user ID
+const userCubes = {};
+
+// Create a cube for a user with a specific color
+function createCube(userId, color = 0xffff00) {
+	const geometry = new THREE.BoxGeometry(1, 1, 1);
+	const material = new THREE.MeshBasicMaterial({ color: parseInt(color) });
+	const cube = new THREE.Mesh(geometry, material);
+	cube.position.set(0, 0.5, 0); // Default position on top of the floor
+	scene.add(cube);
+	return cube;
+}
+
+// My local cube - will be assigned properly when we get our client ID
+let myCube = null;
 
 // floor
 const floorGeometry = new THREE.PlaneGeometry(20, 20);
@@ -38,36 +50,41 @@ document.body.appendChild(renderer.domElement);
 // Movement variables
 const moveSpeed = 0.1;
 const keysPressed = {};
-let lastSentPosition = { x: cube.position.x, y: cube.position.y, z: cube.position.z };
+let lastSentPosition = { x: 0, y: 0.5, z: 0 };
 
 // WebSocket helper function to send position updates
 function sendPositionUpdate() {
+	// If we don't have a cube yet but have a client ID, create our cube
+	if (!myCube && myClientId) {
+		// Don't create a cube here - wait for the server to tell us our position
+		console.log('Waiting for server to assign position for client ID:', myClientId);
+		return;
+	}
+
+	// Only send updates if we have a cube
+	if (!myCube) return;
+
 	// Get the current position
 	const currentPosition = {
-		x: cube.position.x.toFixed(2),
-		y: cube.position.y.toFixed(2),
-		z: cube.position.z.toFixed(2)
+		x: myCube.position.x.toFixed(2),
+		y: myCube.position.y.toFixed(2),
+		z: myCube.position.z.toFixed(2)
 	};
 
-	// Only send if position has changed significantly
-	if (Math.abs(lastSentPosition.x - cube.position.x) > 0.0001 ||
-		Math.abs(lastSentPosition.y - cube.position.y) > 0.0001 ||
-		Math.abs(lastSentPosition.z - cube.position.z) > 0.0001) {
+	// Update last sent position
+	lastSentPosition = { x: myCube.position.x, y: myCube.position.y, z: myCube.position.z };
 
-		// Update last sent position
-		lastSentPosition = { x: cube.position.x, y: cube.position.y, z: cube.position.z };
+	// Format as a special message
+	const positionMessage = `POS:${currentPosition.x},${currentPosition.y},${currentPosition.z}`;
+	console.log('Sending position update:', positionMessage);
 
-		// Format as a special message
-		const positionMessage = `POS:${currentPosition.x},${currentPosition.y},${currentPosition.z}`;
-
-		// Find the message input (hidden or not) and use HTMX's WebSocket to send the message
-		const msgInput = document.getElementById('msg');
-		if (msgInput) {
-			msgInput.value = positionMessage;
-			// Trigger a submit event on the form to send the message via WebSocket
-			const form = msgInput.closest('form');
-			if (form) form.dispatchEvent(new Event('submit'));
-		}
+	// Find the message input and use HTMX's WebSocket to send the message
+	const msgInput = document.getElementById('msg');
+	if (msgInput) {
+		msgInput.value = positionMessage;
+		// Trigger a submit event on the form to send the message via WebSocket
+		const form = msgInput.closest('form');
+		if (form) form.dispatchEvent(new Event('submit'));
 	}
 }
 
@@ -90,47 +107,96 @@ window.addEventListener('resize', () => {
 });
 
 // Process position updates received from WebSocket
-function updateCubePosition(positionString) {
-	if (positionString.startsWith('POS:')) {
-		console.log('Processing position update:', positionString);
-		const [x, y, z] = positionString.substring(4).split(',').map(Number);
-		console.log('Parsed position:', x, y, z);
+function updateAllCubesPositions(positionsJson) {
+	try {
+		// Parse the JSON data containing all user positions
+		const positionsData = JSON.parse(positionsJson);
+		console.log('Received positions data:', positionsData);
 
-		// Update cube position directly - removed the check that was preventing updates
-		cube.position.set(x, y, z);
-		console.log('Cube position updated to:', cube.position.x, cube.position.y, cube.position.z);
+		// Process each user's data
+		for (const [userId, userData] of Object.entries(positionsData)) {
+			const positionString = userData.position;
+			const color = userData.color;
+
+			if (positionString.startsWith('POS:')) {
+				const [x, y, z] = positionString.substring(4).split(',').map(Number);
+				console.log(`User ${userId} position: ${x}, ${y}, ${z}`);
+
+				// If this user doesn't have a cube yet, create one
+				if (!userCubes[userId]) {
+					console.log(`Creating new cube for user ${userId} with color ${color}`);
+					userCubes[userId] = createCube(userId, color);
+
+					// Position the new cube at the server-specified location
+					userCubes[userId].position.set(x, y, z);
+
+					// If this is my cube, store a reference to it
+					if (userId === myClientId) {
+						console.log(`This is my cube! My ID: ${myClientId}`);
+						myCube = userCubes[userId];
+
+						// Update the last sent position to match the server's initial position
+						lastSentPosition = { x, y, z };
+					}
+				}
+				// Only update other users' cubes from the server
+				else if (userId !== myClientId) {
+					userCubes[userId].position.set(x, y, z);
+				}
+			}
+		}
+
+		// Check for users who have disconnected and remove their cubes
+		for (const userId in userCubes) {
+			if (!positionsData[userId]) {
+				console.log(`Removing cube for disconnected user ${userId}`);
+				scene.remove(userCubes[userId]);
+				delete userCubes[userId];
+			}
+		}
+	} catch (error) {
+		console.error('Error processing positions:', error, positionsJson);
 	}
 }
 
-// todo: don't update the client that triggers the change, only other clients
-// Listen for position updates from other clients
+// Listen for client ID assignment
+document.addEventListener('htmx:oobAfterSwap', function (event) {
+	if (event.detail.elt && event.detail.elt.id === 'client-id') {
+		myClientId = event.detail.elt.value;
+		console.log('My client ID:', myClientId);
+
+		// Don't force a position update here anymore - wait for server to send position
+	}
+});
+
+// Listen for position updates from the server
 document.addEventListener('htmx:wsAfterMessage', function (event) {
-	console.log('WebSocket message received');
-
-	// Look for the specific position update element
-	const positionElement = document.getElementById('position-update');
-	if (positionElement) {
-		const positionContent = positionElement.textContent || '';
-		console.log('Found position update element:', positionContent);
-
-		if (positionContent.startsWith('POS:')) {
-			updateCubePosition(positionContent);
+	// Look for the specific position updates element
+	const positionsElement = document.getElementById('position-updates');
+	if (positionsElement) {
+		const positionsJson = positionsElement.textContent || '';
+		if (positionsJson && positionsJson.includes('{')) {  // Ensure it's valid JSON
+			console.log('Received position update:', positionsJson.substring(0, 100) + '...');
+			updateAllCubesPositions(positionsJson);
 		}
 	}
 });
 
 // animate loop
 function animate() {
-	// Handle keyboard movement
-	let moved = false;
-	if (keysPressed['ArrowUp'] || keysPressed['w']) { cube.position.z -= moveSpeed; moved = true; }
-	if (keysPressed['ArrowDown'] || keysPressed['s']) { cube.position.z += moveSpeed; moved = true; }
-	if (keysPressed['ArrowLeft'] || keysPressed['a']) { cube.position.x -= moveSpeed; moved = true; }
-	if (keysPressed['ArrowRight'] || keysPressed['d']) { cube.position.x += moveSpeed; moved = true; }
+	// Only handle movement if we have our own cube
+	if (myCube) {
+		// Handle keyboard movement
+		let moved = false;
+		if (keysPressed['ArrowUp'] || keysPressed['w']) { myCube.position.z -= moveSpeed; moved = true; }
+		if (keysPressed['ArrowDown'] || keysPressed['s']) { myCube.position.z += moveSpeed; moved = true; }
+		if (keysPressed['ArrowLeft'] || keysPressed['a']) { myCube.position.x -= moveSpeed; moved = true; }
+		if (keysPressed['ArrowRight'] || keysPressed['d']) { myCube.position.x += moveSpeed; moved = true; }
 
-	// If the cube moved, send an update
-	if (moved) {
-		sendPositionUpdate();
+		// If the cube moved, send an update
+		if (moved) {
+			sendPositionUpdate();
+		}
 	}
 
 	renderer.render(scene, camera);
